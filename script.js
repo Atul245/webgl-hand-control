@@ -3,34 +3,41 @@ lucide.createIcons();
 class ParticleApp {
     constructor() {
         this.scene = null; this.camera = null; this.renderer = null; this.composer = null; this.particles = null;
-        this.count = 8000; 
+        this.count = 25000; 
         this.positions = []; 
         this.targetColor = new THREE.Color(0xff3366);
         
-        // Interaction State
-        this.handCount = 0;
-        this.handOpenness = 0; 
-        this.handPosition = { x: 0, y: 0 };
-        
-        // Rotation (1 Hand)
+        // Interaction
+        this.handCount = 0; this.handOpenness = 0; this.handPosition = { x: 0, y: 0 };
         this.handAngle = 0; this.lastHandAngle = 0; this.rotationalVelocity = 0; this.hasPreviousAngle = false;
+        this.handDx = 0; this.handDy = 0; this.handSeparation = 0; 
+        this.currentScaleX = 1.0; this.currentScaleY = 1.0; 
         
-        // Rubber Band & Blast (2 Hands)
-        this.handDx = 0; this.handDy = 0; 
-        this.handSeparation = 0; 
-        this.currentScaleX = 1.0; this.currentScaleY = 1.0;
-        this.blastIntensity = 0; 
+        // Destruction & Sequence
+        this.blastIntensity = 0;
+        this.isDoubleFist = false;
+        this.isHeartBroken = false;
+        this.isRainMode = false;
+        this.isMerging = false;
+        this.sequenceTimer = 0; 
+        this.lastDestructionTime = -10;
+        this.gestureCooldown = 0;
         
         // Gestures
         this.isShapeGestureActive = false; 
         this.isColorGestureActive = false; 
+        this.isHeartGestureActive = false;
         
-        this.shapeList = ['sphere', 'saturn', 'flowers', 'fireworks', 'dna', 'cube', 'torus'];
+        // Audio
+        this.audioContext = null; this.analyser = null; this.dataArray = null;
+        this.isAudioActive = false; this.simulatedAudio = false;
+        
+        // SHAPE LIST (Heart & Flower hidden from cycle)
+        this.shapeList = ['sphere', 'saturn', 'flowers', 'fireworks', 'dna', 'cube', 'torus', 'flower_pot', 'heart'];
         this.currentShapeIndex = 0;
-
+        
         this.colorList = [0xff3366, 0x33ccff, 0x00ff99, 0xffcc33, 0xffffff, 0xcc33ff];
         this.currentColorIndex = 0;
-        
         this.currentTemplate = 'sphere'; 
         this.customText = "";
         
@@ -40,9 +47,49 @@ class ParticleApp {
 
         this.initThree();
         this.initParticles();
+        document.getElementById('start-btn').classList.remove('hidden');
+    }
+
+    async startApp() {
+        document.getElementById('loading-screen').style.display = 'none';
         this.initMediaPipe();
+        this.initAudio(); 
         this.animate();
         this.setupResize();
+    }
+
+    initAudio() {
+        navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            this.analyser = this.audioContext.createAnalyser();
+            const source = this.audioContext.createMediaStreamSource(stream);
+            source.connect(this.analyser);
+            this.analyser.fftSize = 1024;
+            this.analyser.smoothingTimeConstant = 0.85;
+            this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+            this.isAudioActive = true;
+        })
+        .catch(err => {
+            console.warn("Microphone denied.");
+            this.isAudioActive = false;
+            this.simulatedAudio = true;
+        });
+        const bg = document.getElementById('bg-music');
+        bg.play().catch(e=>{});
+    }
+
+    toggleAudio() {
+        const audio = document.getElementById('bg-music');
+        if (audio.paused) {
+            audio.play();
+            if(this.audioContext) this.audioContext.resume();
+            document.getElementById('audio-icon').setAttribute('data-lucide', 'volume-2');
+        } else {
+            audio.pause();
+            document.getElementById('audio-icon').setAttribute('data-lucide', 'volume-x');
+        }
+        lucide.createIcons();
     }
 
     initThree() {
@@ -55,22 +102,15 @@ class ParticleApp {
         this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-        this.renderer.toneMapping = THREE.ReinhardToneMapping;
         container.appendChild(this.renderer.domElement);
-        const ambientLight = new THREE.AmbientLight(0x404040);
-        this.scene.add(ambientLight);
         
-        // POST PROCESSING CHAIN
         const renderScene = new THREE.RenderPass(this.scene, this.camera);
-        
-        // Bloom Pass (Glow)
         const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
         bloomPass.threshold = 0.0; bloomPass.strength = 1.8; bloomPass.radius = 0.5;
-        
         this.composer = new THREE.EffectComposer(this.renderer);
         this.composer.addPass(renderScene);
         this.composer.addPass(bloomPass);
-
+        
         window.addEventListener('mousemove', (e) => {
             this.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
             this.mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
@@ -80,252 +120,271 @@ class ParticleApp {
     createTexture() {
         const canvas = document.createElement('canvas');
         canvas.width = 32; canvas.height = 32;
-        const context = canvas.getContext('2d');
-        const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
-        gradient.addColorStop(0, 'rgba(255,255,255,1)');
-        gradient.addColorStop(0.4, 'rgba(255,255,255,0.5)');
-        gradient.addColorStop(1, 'rgba(0,0,0,0)');
-        context.fillStyle = gradient;
-        context.fillRect(0, 0, 32, 32);
+        const ctx = canvas.getContext('2d');
+        const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+        grad.addColorStop(0, 'rgba(255,255,255,1)');
+        grad.addColorStop(0.4, 'rgba(255,255,255,0.5)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad; ctx.fillRect(0, 0, 32, 32);
         const texture = new THREE.Texture(canvas);
         texture.needsUpdate = true;
         return texture;
     }
 
     initParticles() {
-        const geometry = new THREE.BufferGeometry();
-        const posArray = new Float32Array(this.count * 3);
-        const colors = new Float32Array(this.count * 3);
-        for(let i = 0; i < this.count * 3; i++) {
-            posArray[i] = (Math.random() - 0.5) * 50;
-            colors[i] = 1;
-        }
-        geometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-        const material = new THREE.PointsMaterial({
-            size: 0.4, map: this.createTexture(), transparent: true, opacity: 0.9, vertexColors: true, blending: THREE.AdditiveBlending, depthWrite: false
-        });
-        this.particles = new THREE.Points(geometry, material);
+        const geo = new THREE.BufferGeometry();
+        const pos = new Float32Array(this.count * 3);
+        const col = new Float32Array(this.count * 3);
+        for(let i=0; i<this.count*3; i++) { pos[i] = (Math.random()-0.5)*50; col[i] = 1; }
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+        const mat = new THREE.PointsMaterial({ size: 0.35, map: this.createTexture(), transparent: true, opacity: 0.9, vertexColors: true, blending: THREE.AdditiveBlending, depthWrite: false });
+        this.particles = new THREE.Points(geo, mat);
         this.scene.add(this.particles);
         this.currentPositions = this.particles.geometry.attributes.position.array;
         this.generateShape('sphere');
     }
 
-    sampleTextCoordinates(text) {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        canvas.width = 800; canvas.height = 200;
-        ctx.fillStyle = 'black'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = 'white'; ctx.font = '900 120px Inter, sans-serif'; 
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(text.toUpperCase(), canvas.width / 2, canvas.height / 2);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const data = imageData.data;
-        const coords = [];
-        const step = 4; 
-        for (let y = 0; y < canvas.height; y += step) {
-            for (let x = 0; x < canvas.width; x += step) {
-                const index = (y * canvas.width + x) * 4;
-                if (data[index] > 128) { 
-                    const px = (x - canvas.width / 2) * 0.08; 
-                    const py = -(y - canvas.height / 2) * 0.08;
-                    coords.push({x: px, y: py});
-                }
-            }
-        }
-        return coords;
-    }
-
-    generateShape(type) {
-        this.positions = new Float32Array(this.count * 3);
-        let textCoords = [];
-        if (type === 'text') { textCoords = this.sampleTextCoordinates(this.customText); }
-
-        for (let i = 0; i < this.count; i++) {
-            const i3 = i * 3;
-            let x, y, z;
-            if (type === 'text') {
-                if (i < textCoords.length) { x = textCoords[i].x; y = textCoords[i].y; z = (Math.random() - 0.5) * 1.5; } 
-                else { const r = 30 + Math.random() * 20; const theta = Math.random() * Math.PI * 2; const phi = Math.acos(2 * Math.random() - 1); x = r * Math.sin(phi) * Math.cos(theta); y = r * Math.sin(phi) * Math.sin(theta); z = r * Math.cos(phi); }
-            } 
-            else if (type === 'saturn') {
-                const rnd = Math.random();
-                if (rnd > 0.3) { const angle = Math.random() * Math.PI * 2; const radius = 8 + Math.random() * 4; x = Math.cos(angle) * radius; z = Math.sin(angle) * radius; y = (Math.random() - 0.5) * 0.2; }
-                else { const theta = Math.random() * Math.PI * 2; const phi = Math.acos(2 * Math.random() - 1); const r = 4; x = r * Math.sin(phi) * Math.cos(theta); y = r * Math.sin(phi) * Math.sin(theta); z = r * Math.cos(phi); }
-            } else if (type === 'flowers') {
-                const goldenAngle = Math.PI * (3 - Math.sqrt(5)); const r = 0.3 * Math.sqrt(i); const theta = i * goldenAngle; x = r * Math.cos(theta); z = r * Math.sin(theta); y = Math.sqrt(r) * 1.5 - 5; 
-            } else if (type === 'fireworks') {
-                const r = 15 * Math.cbrt(Math.random()); const theta = Math.random() * Math.PI * 2; const phi = Math.acos(2 * Math.random() - 1); x = r * Math.sin(phi) * Math.cos(theta); y = r * Math.sin(phi) * Math.sin(theta); z = r * Math.cos(phi);
-            } else if (type === 'dna') {
-                const helixRadius = 5; const height = 24; const turns = 3; 
-                if (i < this.count * 0.7) { const t = (i / (this.count * 0.7)); y = (t - 0.5) * height; const angle = t * Math.PI * 2 * turns; const strandOffset = (i % 2 === 0) ? 0 : Math.PI; x = Math.cos(angle + strandOffset) * helixRadius; z = Math.sin(angle + strandOffset) * helixRadius; x += (Math.random() - 0.5) * 0.5; z += (Math.random() - 0.5) * 0.5; y += (Math.random() - 0.5) * 0.2; }
-                else { const t = Math.random(); y = (t - 0.5) * height; const angle = t * Math.PI * 2 * turns; const mix = (Math.random() * 2) - 1; x = mix * Math.cos(angle) * helixRadius; z = mix * Math.sin(angle) * helixRadius; x += (Math.random() - 0.5) * 0.2; z += (Math.random() - 0.5) * 0.2; }
-            } else if (type === 'cube') {
-                const size = 12; x = (Math.random() - 0.5) * size; y = (Math.random() - 0.5) * size; z = (Math.random() - 0.5) * size;
-            } else if (type === 'sphere') {
-                const r = 8; const theta = Math.random() * Math.PI * 2; const phi = Math.acos(2 * Math.random() - 1); x = r * Math.sin(phi) * Math.cos(theta); y = r * Math.sin(phi) * Math.sin(theta); z = r * Math.cos(phi); const fuzz = 1 + (Math.random() * 0.2); x *= fuzz; y *= fuzz; z *= fuzz;
-            } else if (type === 'torus') {
-                const u = Math.random() * Math.PI * 2; const v = Math.random() * Math.PI * 2; const R = 8; const r = 3; x = (R + r * Math.cos(v)) * Math.cos(u); y = (R + r * Math.cos(v)) * Math.sin(u); z = r * Math.sin(v); const tempY = y; y = z; z = tempY;
-            }
-            this.positions[i3] = x; this.positions[i3 + 1] = y; this.positions[i3 + 2] = z;
-        }
-    }
-
-    cycleShape() {
-        this.currentShapeIndex = (this.currentShapeIndex + 1) % this.shapeList.length;
-        this.setTemplate(this.shapeList[this.currentShapeIndex]);
-    }
-
-    cycleColor() {
-        this.currentColorIndex = (this.currentColorIndex + 1) % this.colorList.length;
-        this.setColor(this.colorList[this.currentColorIndex]);
-    }
-
-    processText() {
-        const input = document.getElementById('text-input');
-        const text = input.value.trim();
-        if (text) { this.customText = text; this.setTemplate('text'); input.value = ''; input.blur(); }
-    }
-
-    setTemplate(type) {
-        this.currentTemplate = type; this.generateShape(type);
-        document.querySelectorAll('.btn-option').forEach(btn => btn.classList.remove('active', 'border-white/40', 'bg-white/20'));
-        const btn = document.querySelector(`button[onclick="app.setTemplate('${type}')"]`);
-        if(btn) btn.classList.add('active', 'border-white/40', 'bg-white/20');
-    }
-
-    setColor(hex) { this.targetColor.setHex(hex); }
-
+    // --- ANIMATION LOOP ---
     animate() {
         requestAnimationFrame(() => this.animate());
         this.time += 0.01;
         this.clock.getDelta();
+        if(this.gestureCooldown > 0) this.gestureCooldown--;
 
-        let factor = 1;
-        let targetScaleX = 1.0;
-        let targetScaleY = 1.0;
-        let isClapping = false;
-
-        // --- 2 HAND LOGIC ---
-        if (this.handCount === 2) {
-            targetScaleX = Math.max(0.5, this.handDx * 3.0); 
-            targetScaleY = Math.max(0.5, this.handDy * 4.0); 
-            if (this.handSeparation < 0.15) { isClapping = true; }
-        } 
-        else if (this.handCount === 1) {
-            factor = 0.5 + (this.handOpenness * 2.5);
-        } 
-        else {
-            factor = 1 + Math.sin(this.time * 2) * 0.3;
+        let bassFactor = 0;
+        let freqData = [];
+        if (this.isAudioActive && this.analyser) {
+            this.analyser.getByteFrequencyData(this.dataArray);
+            freqData = this.dataArray; 
+            let sum = 0; for(let i=0; i<10; i++) sum += this.dataArray[i];
+            let avg = sum / 10;
+            if (avg > 50) bassFactor = (avg - 50) / 100;
+        } else {
+            bassFactor = Math.sin(this.time * 2) * 0.1;
         }
 
-        // Blast Intensity
-        let targetBlast = isClapping ? 1.0 : 0.0;
-        this.blastIntensity += (targetBlast - this.blastIntensity) * 0.1;
+        let isHeartMode = (this.currentTemplate === 'heart');
+        let isFlowerMode = (this.currentTemplate === 'flower_pot');
+        let isTextMode = (this.currentTemplate === 'text');
+        
+        let factor = 1.0;
+        let scaleX = 1.0, scaleY = 1.0;
+        
+        if (isHeartMode || isTextMode) {
+            factor = 1.0 + (bassFactor * 1.5); 
+            if(isHeartMode && !this.isHeartBroken && !this.isRainMode) this.targetColor.setHex(0xff0000); 
+        } 
+        else if (isFlowerMode) { factor = 1.0 + (bassFactor * 0.2); }
+        else {
+            factor = 1.0 + bassFactor * 2.0; 
+            if (this.handCount === 2) {
+                scaleX = Math.max(0.5, this.handDx * 3.0); 
+                scaleY = Math.max(0.5, this.handDy * 4.0); 
+            } else if (this.handCount === 1) {
+                factor += (this.handOpenness * 1.5);
+            } else {
+                factor = 1.2;
+            }
+        }
 
-        this.currentScaleX += (targetScaleX - this.currentScaleX) * 0.1;
-        this.currentScaleY += (targetScaleY - this.currentScaleY) * 0.1;
-        this.particles.scale.set(this.currentScaleX, this.currentScaleY, 1.0);
+        // --- SEQUENCE LOGIC ---
+        
+        // 1. Double Fist on Flower = Rain
+        if (this.isDoubleFist && this.handCount === 2 && isFlowerMode && !this.isRainMode) {
+            this.isRainMode = true;
+            this.setTemplate('rain_mode'); 
+            this.lastDestructionTime = this.time;
+            this.isDoubleFist = false; 
+            this.updateStatus("🌧️ LOVE RAIN");
+        }
+
+        // 2. Rain to Heart
+        if (this.isRainMode) {
+            let elapsed = this.time - this.lastDestructionTime;
+            // 5 seconds of rain
+            if (elapsed > 5.0 && !this.isMerging) {
+                this.isMerging = true;
+                this.generateShape('heart'); 
+                this.updateStatus("❤️ FORMING LOVE");
+            }
+            // 2 seconds of merging (7s total)
+            if (elapsed > 7.0) {
+                this.isRainMode = false;
+                this.isMerging = false;
+                this.setTemplate('heart');
+                this.updateStatus("❤️ POUR TOI");
+            }
+        }
+
+        // 3. Heartbreak to Flower (Fast 0.4s)
+        if (this.isHeartBroken) {
+            if (this.time - this.lastDestructionTime > 0.4) { 
+                this.isHeartBroken = false; 
+                this.setTemplate('flower_pot'); 
+                this.updateStatus("🌹 FOR YOU");
+            }
+        }
+
+        // 4. Standard Destruction (Not in special modes)
+        if (this.isDoubleFist && !isHeartMode && !isFlowerMode && !this.isRainMode && !this.isHeartBroken) {
+            this.lastDestructionTime = this.time;
+            this.updateStatus("💥 BLAST!");
+        }
+
+        let isDestroyed = (this.isDoubleFist && !isFlowerMode && !isHeartMode && !isRainMode) || (this.time - this.lastDestructionTime < 0.05);
+        let targetBlast = isDestroyed ? 5.0 : 0.0;
+        this.blastIntensity += (targetBlast - this.blastIntensity) * 0.4; 
+
+        if (!this.isHeartBroken && !this.isRainMode) {
+            this.currentScaleX += (scaleX - this.currentScaleX) * 0.2; 
+            this.currentScaleY += (scaleY - this.currentScaleY) * 0.2;
+            this.particles.scale.set(this.currentScaleX, this.currentScaleY, 1.0);
+        }
 
         const positions = this.particles.geometry.attributes.position.array;
         const colors = this.particles.geometry.attributes.color.array;
 
-        let physX = 9999, physY = 9999;
-        if (this.handCount === 1) {
-            physX = (this.handPosition.x - 0.5) * 30;
-            physY = -(this.handPosition.y - 0.5) * 30;
-        } else if (this.handCount === 0) {
-            physX = this.mouse.x * 15;
-            physY = this.mouse.y * 15;
-        }
-        
-        let isAttracting = (this.handCount === 1 && this.handOpenness < 0.2);
+        let physX = (this.handCount === 1) ? (this.handPosition.x - 0.5) * 30 : this.mouse.x * 15;
+        let physY = (this.handCount === 1) ? -(this.handPosition.y - 0.5) * 30 : this.mouse.y * 15;
+        let isAttracting = (this.handCount === 1 && this.handOpenness < 0.2 && !isHeartMode && !isFlowerMode && !this.isRainMode && !isTextMode);
 
         for(let i = 0; i < this.count; i++) {
             const i3 = i * 3;
-            const tx = this.positions[i3];
-            const ty = this.positions[i3+1];
-            const tz = this.positions[i3+2];
+            let tx = this.positions[i3];
+            let ty = this.positions[i3+1];
+            let tz = this.positions[i3+2];
 
-            let expansion = factor;
-            if (this.currentTemplate === 'fireworks') { expansion = factor * (1 + Math.sin(this.time + i * 0.01) * 0.2); }
+            // 1. RAIN
+            if (this.isRainMode) {
+                if (this.isMerging) {
+                    let mergeSpeed = 0.15; 
+                    positions[i3] += (tx - positions[i3]) * mergeSpeed;
+                    positions[i3+1] += (ty - positions[i3+1]) * mergeSpeed;
+                    positions[i3+2] += (tz - positions[i3+2]) * mergeSpeed;
+                    colors[i3] += (1.0 - colors[i3]) * 0.1;
+                    colors[i3+1] += (0.0 - colors[i3+1]) * 0.1;
+                    colors[i3+2] += (0.0 - colors[i3+2]) * 0.1;
+                } else {
+                    let speed = 0.1 + (Math.random() * 0.15);
+                    ty += speed + (bassFactor * 0.5); 
+                    if (ty > 20) { ty = -50; tx = (Math.random()-0.5)*150; tz = (Math.random()-0.5)*60; }
+                    this.targetColor.r = 1.0; this.targetColor.g = 0.05; this.targetColor.b = 0.2;
+                    positions[i3] = tx; positions[i3+1] = ty; positions[i3+2] = tz;
+                    colors[i3] += (this.targetColor.r - colors[i3]) * 0.1;
+                    colors[i3+1] += (this.targetColor.g - colors[i3+1]) * 0.1;
+                    colors[i3+2] += (this.targetColor.b - colors[i3+2]) * 0.1;
+                }
+                continue;
+            }
 
-            let targetX = tx * expansion;
-            let targetY = ty * expansion;
-            let targetZ = tz * expansion;
+            // 2. HEARTBREAK (Fast Fall)
+            else if (this.isHeartBroken) {
+                ty -= 40.0; 
+                if (tx < 0) tx -= 8.0; else tx += 8.0; 
+                tx += (Math.random()-0.5)*5.0; 
+                colors[i3] = 0.2; colors[i3+1] = 0.2; colors[i3+2] = 0.4; 
+                positions[i3] += (tx - positions[i3]) * 0.2;
+                positions[i3+1] += (ty - positions[i3+1]) * 0.2;
+                positions[i3+2] += (tz - positions[i3+2]) * 0.2;
+                continue; 
+            }
 
-            // BLAST SCATTER
-            let scatterX = Math.sin(i * 34.12) * 40 * this.blastIntensity;
-            let scatterY = Math.cos(i * 12.34) * 40 * this.blastIntensity;
-            let scatterZ = Math.sin(i * 56.78) * 40 * this.blastIntensity;
-
-            targetX += scatterX;
-            targetY += scatterY;
-            targetZ += scatterZ;
-
-            // Physics
-            let px = positions[i3];
-            let py = positions[i3+1];
-            let dist = Math.sqrt((px - physX)**2 + (py - physY)**2);
-            
-            let forceX = 0, forceY = 0;
-
-            if (isAttracting) {
-                let pullStrength = 0.1;
-                forceX = (physX - px) * pullStrength;
-                forceY = (physY - py) * pullStrength;
-                targetX = px + forceX;
-                targetY = py + forceY;
-                targetZ = targetZ * 0.9; 
-            } else {
-                let repelRadius = 5.0;
-                if (dist < repelRadius) {
-                    let force = (repelRadius - dist) / repelRadius; 
-                    let angle = Math.atan2(py - physY, px - physX);
-                    forceX = Math.cos(angle) * force * 5.0;
-                    forceY = Math.sin(angle) * force * 5.0;
+            // 3. FLOWER COLORS
+            if (isFlowerMode && !this.isRainMode) {
+                const flowerLimit = this.count * 0.7;
+                if (i < flowerLimit) {
+                    if (ty > 7.5) { this.targetColor.setRGB(1.0, 0.0, 0.2); if(Math.random()>0.95) this.targetColor.setRGB(1,0.8,0.8); } 
+                    else if (ty > 0.5) { this.targetColor.setRGB(0.1, 0.8, 0.1); } 
+                    else { this.targetColor.setRGB(0.7, 0.35, 0.1); } 
+                } else {
+                    this.targetColor.setRGB(1.0, 1.0, 1.0); 
                 }
             }
 
-            let speed = isAttracting ? 0.05 : 0.2;
-            if (this.blastIntensity > 0.1) speed = 0.4;
+            // 4. EQ & TURBULENCE
+            if (!this.isRainMode) {
+                let freqIndex = Math.floor((i % 512)); 
+                let eqVal = 0;
+                if(freqData[freqIndex]) eqVal = freqData[freqIndex] / 255.0;
+                let stability = (isHeartMode || isFlowerMode || isTextMode) ? 0.2 : 4.0;
+                let eqPush = 1.0 + (eqVal * stability);
+                tx *= eqPush * factor; ty *= eqPush * factor; tz *= eqPush * factor;
 
-            positions[i3] += ((targetX + forceX) - positions[i3]) * speed;
-            positions[i3+1] += ((targetY + forceY) - positions[i3+1]) * speed;
-            positions[i3+2] += (targetZ - positions[i3+2]) * speed;
+                if (!isHeartMode && !isFlowerMode) {
+                    let noise = Math.sin(this.time * 5 + i) * 0.2; 
+                    tx += noise; ty += noise; tz += noise;
+                }
+            }
 
-            colors[i3] += (this.targetColor.r - colors[i3]) * 0.05;
-            colors[i3+1] += (this.targetColor.g - colors[i3+1]) * 0.05;
-            colors[i3+2] += (this.targetColor.b - colors[i3+2]) * 0.05;
+            // 5. DESTRUCTION
+            if (this.blastIntensity > 0.1) {
+                if (i % 5 === 0) {
+                     tx += (Math.random()-0.5) * 5.0; ty += (Math.random()-0.5) * 5.0; tz += (Math.random()-0.5) * 5.0;
+                } else {
+                    let scatter = this.blastIntensity * 80;
+                    tx = Math.sin(i * 12.9) * scatter; ty = Math.cos(i * 78.2) * scatter; tz = Math.sin(i * 45.1) * scatter;
+                }
+            }
+
+            // 6. PHYSICS
+            let forceX = 0, forceY = 0;
+            if (!isHeartMode && !isFlowerMode && !this.isRainMode && !isTextMode && !this.isDoubleFist) {
+                let px = positions[i3], py = positions[i3+1];
+                let dist = Math.sqrt((px - physX)**2 + (py - physY)**2);
+                if (isAttracting) {
+                    let s = 0.15;
+                    forceX = (physX - px) * s; forceY = (physY - py) * s;
+                    tx = px + forceX; ty = py + forceY; 
+                } else if (dist < 5.0) {
+                    let f = (5.0 - dist) / 5.0;
+                    let a = Math.atan2(py - physY, px - physX);
+                    forceX = Math.cos(a) * f * 5.0; forceY = Math.sin(a) * f * 5.0;
+                }
+            }
+
+            let speed = (this.isRainMode) ? 0.05 : (isAttracting ? 0.08 : 0.4);
+            if(!isHeartMode && !isFlowerMode && !this.isRainMode && !isTextMode) { tx += (Math.random()-0.5)*0.2; ty += (Math.random()-0.5)*0.2; }
+
+            positions[i3] += ((tx + forceX) - positions[i3]) * speed;
+            positions[i3+1] += ((ty + forceY) - positions[i3+1]) * speed;
+            positions[i3+2] += (tz - positions[i3+2]) * speed;
+
+            // Color
+            colors[i3] += (this.targetColor.r - colors[i3]) * 0.1;
+            colors[i3+1] += (this.targetColor.g - colors[i3+1]) * 0.1;
+            colors[i3+2] += (this.targetColor.b - colors[i3+2]) * 0.1;
         }
 
         this.particles.geometry.attributes.position.needsUpdate = true;
         this.particles.geometry.attributes.color.needsUpdate = true;
 
         // Rotation
-        let targetRotY = 0, targetRotX = 0;
-        if (this.handCount === 1) {
-            targetRotY = (this.handPosition.x - 0.5) * 2;
-            targetRotX = (this.handPosition.y - 0.5) * 2;
-        } else if (this.handCount === 0) {
-            targetRotY = this.mouse.x;
-            targetRotX = this.mouse.y;
-        }
+        if (isHeartMode || isFlowerMode || this.isRainMode || isTextMode) {
+            this.particles.rotation.x += (0 - this.particles.rotation.x) * 0.1;
+            this.particles.rotation.y += (0 - this.particles.rotation.y) * 0.1;
+            this.particles.rotation.z += (0 - this.particles.rotation.z) * 0.1;
+            
+            if(this.handCount === 1 && this.hasPreviousAngle) {
+                 let d = this.handAngle - this.lastHandAngle;
+                 if(d>Math.PI) d-=Math.PI*2; if(d<-Math.PI) d+=Math.PI*2;
+                 this.particles.rotation.z += d;
+            }
 
-        this.particles.rotation.y += (targetRotY - this.particles.rotation.y) * 0.1;
-        this.particles.rotation.x += (targetRotX - this.particles.rotation.x) * 0.1;
-
-        if (this.handCount === 1 && this.hasPreviousAngle) {
-            let delta = this.handAngle - this.lastHandAngle;
-            if (delta > Math.PI) delta -= Math.PI * 2;
-            if (delta < -Math.PI) delta += Math.PI * 2;
-            this.particles.rotation.z += delta;
-            this.rotationalVelocity = this.rotationalVelocity * 0.5 + delta * 0.5;
         } else {
-            this.particles.rotation.z += this.rotationalVelocity;
-            this.rotationalVelocity *= 0.96; 
+            let targetRotY = (this.handCount === 1) ? (this.handPosition.x - 0.5) * 2 : this.mouse.x;
+            let targetRotX = (this.handCount === 1) ? (this.handPosition.y - 0.5) * 2 : this.mouse.y;
+            this.particles.rotation.y += (targetRotY - this.particles.rotation.y) * 0.1;
+            this.particles.rotation.x += (targetRotX - this.particles.rotation.x) * 0.1;
+            
+            if (this.handCount === 1 && this.hasPreviousAngle) {
+                let d = this.handAngle - this.lastHandAngle;
+                if (d > Math.PI) d -= Math.PI * 2;
+                if (d < -Math.PI) d += Math.PI * 2;
+                this.particles.rotation.z += d;
+            }
         }
-
+        
         this.lastHandAngle = this.handAngle;
         this.hasPreviousAngle = (this.handCount === 1);
 
@@ -341,88 +400,274 @@ class ParticleApp {
         });
     }
 
+    updateStatus(msg) {
+        document.getElementById('status-text').innerText = msg;
+    }
+
+    sampleTextCoordinates(text, offsetX = 0, offsetY = 0) {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = 1000; canvas.height = 300; 
+        ctx.fillStyle = 'black'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = 'white'; 
+        ctx.font = 'bold 100px Arial'; 
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(text.toUpperCase(), canvas.width / 2, canvas.height / 2);
+        
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        const coords = [];
+        for (let y = 0; y < canvas.height; y += 4) {
+            for (let x = 0; x < canvas.width; x += 4) {
+                if (data[(y * canvas.width + x) * 4] > 128) {
+                    coords.push({
+                        x: (x - canvas.width/2)*0.08 + offsetX, 
+                        y: -(y - canvas.height/2)*0.08 + offsetY
+                    });
+                }
+            }
+        }
+        return coords;
+    }
+
+    generateShape(type) {
+        this.positions = new Float32Array(this.count * 3);
+        if (type === 'rain_mode') return; 
+
+        let textCoords = [];
+        let leftText = [], rightText = [];
+        
+        if (type === 'text') {
+            textCoords = this.sampleTextCoordinates(this.customText, 0, 0);
+        } else if (type === 'flower_pot') {
+            leftText = this.sampleTextCoordinates("POUR", -25, 0);
+            rightText = this.sampleTextCoordinates("TOI", 25, 0);
+        }
+
+        for (let i = 0; i < this.count; i++) {
+            const i3 = i * 3;
+            let x, y, z;
+            
+            if (type === 'text') {
+                if (textCoords.length > 0) {
+                    let pt = textCoords[i % textCoords.length];
+                    x = pt.x; y = pt.y; z = (Math.random()-0.5) * 1.5; 
+                } else { x=0;y=0;z=0; }
+                if(i > this.count * 0.8) { x = (Math.random()-0.5)*60; y=(Math.random()-0.5)*30; z=(Math.random()-0.5)*30; }
+            }
+            else if (type === 'flower_pot') {
+                const flowerLimit = this.count * 0.7; 
+                if (i < flowerLimit) {
+                    let fi = i; let fCount = flowerLimit;
+                    const fHead = fCount * 0.30;
+                    const fStem = fCount * 0.20;
+                    const fLeaf = fCount * 0.15;
+                    
+                    if (fi < fHead) { 
+                        const u = Math.random() * Math.PI * 2; const v = Math.random() * Math.PI;
+                        let r = 3.5 + 1.5 * Math.sin(6 * u) * Math.sin(v);
+                        x = r * Math.sin(v) * Math.cos(u); z = r * Math.sin(v) * Math.sin(u); y = r * Math.cos(v) + 9;
+                        x+=(Math.random()-0.5); z+=(Math.random()-0.5);
+                    } else if (fi < fHead + fStem) { 
+                        const t = Math.random(); y = (t * 8) + 0.5; 
+                        x = Math.sin(t * Math.PI) * 1.2 + (Math.random()-0.5)*0.5; z = Math.cos(t * Math.PI) * 0.6 + (Math.random()-0.5)*0.5;
+                    } else if (fi < fHead + fStem + fLeaf) { 
+                        const leafWhich = i % 2; const t = Math.random(); 
+                        let attachY = (leafWhich===0)?3:5; let dirX = (leafWhich===0)?1:-1;
+                        let width = Math.sin(t * Math.PI) * 1.8 * (Math.random()*0.6+0.4);
+                        x = (dirX * t * 4.5) + (Math.random()-0.5) * width; z = (Math.random()-0.5) * width * 0.5; y = attachY + (t * 0.5) - (t*t*1.2);
+                    } else { 
+                        let h = 9; let yNorm = Math.random();
+                        y = (yNorm * h) - 9.5; 
+                        let r = 4.5 + (yNorm * 2.0) * (0.85 + 0.15*Math.random()); 
+                        let ang = Math.random()*Math.PI*2;
+                        x = Math.cos(ang)*r; z = Math.sin(ang)*r;
+                    }
+                } else {
+                    let remaining = i - flowerLimit;
+                    let totalText = this.count - flowerLimit;
+                    if (remaining < totalText / 2) {
+                        if(leftText.length > 0) { let pt = leftText[remaining % leftText.length]; x = pt.x; y = pt.y; z = 0; } else { x=0;y=0;z=0; }
+                    } else {
+                        if(rightText.length > 0) { let pt = rightText[remaining % rightText.length]; x = pt.x; y = pt.y; z = 0; } else { x=0;y=0;z=0; }
+                    }
+                }
+            }
+            else if (type === 'heart') {
+                const t = Math.random() * Math.PI * 2; const r = 10 * Math.sqrt(Math.random()); 
+                x = r * 16 * Math.pow(Math.sin(t), 3); y = r * (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t));
+                z = (Math.random() - 0.5) * r * 5; x *= 0.05; y *= 0.05; z *= 0.05; y += 0.2; 
+            }
+            else if (type === 'sphere') {
+                let r=8, t=Math.random()*Math.PI*2, p=Math.acos(2*Math.random()-1);
+                x=r*Math.sin(p)*Math.cos(t); y=r*Math.sin(p)*Math.sin(t); z=r*Math.cos(p);
+                let f = 1 + Math.random()*0.2; x*=f; y*=f; z*=f;
+            } else if (type === 'saturn') {
+                if(Math.random()>0.3) { let a=Math.random()*Math.PI*2, r=8+Math.random()*4; x=Math.cos(a)*r; z=Math.sin(a)*r; y=(Math.random()-0.5)*0.2; }
+                else { let t=Math.random()*Math.PI*2, p=Math.acos(2*Math.random()-1), r=4; x=r*Math.sin(p)*Math.cos(t); y=r*Math.sin(p)*Math.sin(t); z=r*Math.cos(p); }
+            } else if (type === 'flowers') {
+                let r = 0.3*Math.sqrt(i), t = i * (Math.PI * (3 - Math.sqrt(5)));
+                x = r*Math.cos(t); z = r*Math.sin(t); y = Math.sqrt(r)*1.5 - 5;
+            } else if (type === 'dna') {
+                let t = (i/(this.count*0.7)), h = 24; y = (t-0.5)*h;
+                if (i < this.count*0.7) {
+                    let ang = t*Math.PI*2*3, off = (i%2===0)?0:Math.PI;
+                    x = Math.cos(ang+off)*5; z = Math.sin(ang+off)*5;
+                } else {
+                    let ang = Math.random()*Math.PI*2*3, m = (Math.random()*2)-1;
+                    x = m*Math.cos(ang)*5; z = m*Math.sin(ang)*5; y = (Math.random()-0.5)*h;
+                }
+            } else if (type === 'cube') {
+                x=(Math.random()-0.5)*12; y=(Math.random()-0.5)*12; z=(Math.random()-0.5)*12;
+            } else if (type === 'torus') {
+                let u=Math.random()*Math.PI*2, v=Math.random()*Math.PI*2, R=8, r=3;
+                x=(R+r*Math.cos(v))*Math.cos(u); y=(R+r*Math.cos(v))*Math.sin(u); z=r*Math.sin(v);
+            } else if (type === 'fireworks') {
+                let r=15*Math.cbrt(Math.random()), t=Math.random()*Math.PI*2, p=Math.acos(2*Math.random()-1);
+                x=r*Math.sin(p)*Math.cos(t); y=r*Math.sin(p)*Math.sin(t); z=r*Math.cos(p);
+            }
+            this.positions[i3] = x; this.positions[i3+1] = y; this.positions[i3+2] = z;
+        }
+    }
+
+    cycleShape() { 
+        this.currentShapeIndex = (this.currentShapeIndex + 1) % this.shapeList.length; 
+        let nextShape = this.shapeList[this.currentShapeIndex];
+        if(nextShape === 'heart' || nextShape === 'flower_pot') {
+            this.currentShapeIndex = 1; 
+            nextShape = 'sphere';
+        }
+        this.setTemplate(nextShape); 
+    }
+    
+    cycleColor() { this.currentColorIndex=(this.currentColorIndex+1)%this.colorList.length; this.setColor(this.colorList[this.currentColorIndex]); }
+    processText() { const t=document.getElementById('text-input').value.trim(); if(t){ this.customText=t; this.setTemplate('text'); } }
+    
+    setTemplate(type) {
+        this.currentTemplate = type;
+        const idx = this.shapeList.indexOf(type);
+        if (idx !== -1) this.currentShapeIndex = idx;
+        
+        // RESET SPECIAL STATES
+        this.isHeartBroken = false;
+        this.isRainMode = false;
+        this.isMerging = false;
+        this.isDoubleFist = false;
+        this.isHeartGestureActive = false;
+        
+        if(type !== 'rain_mode') this.generateShape(type);
+        
+        document.querySelectorAll('.btn-option').forEach(btn => btn.classList.remove('active', 'border-white/40', 'bg-white/20'));
+        const btn = document.getElementById('btn-' + type);
+        if(btn) btn.classList.add('active', 'border-white/40', 'bg-white/20');
+        if (type !== 'heart' && type !== 'flower_pot' && type !== 'rain_mode') { 
+            this.setColor(this.colorList[this.currentColorIndex]); 
+        }
+    }
+
+    setColor(hex) { this.targetColor.setHex(hex); }
+
+    calculateOpenness(landmarks) {
+        const w=landmarks[0], t=landmarks[12];
+        const d = Math.sqrt(Math.pow(t.x-w.x,2)+Math.pow(t.y-w.y,2));
+        return Math.max(0, Math.min(1, (d - 0.2)*2.5));
+    }
+
     initMediaPipe() {
-        const videoElement = document.getElementById('video-input');
-        const canvasElement = document.getElementById('camera-feed');
-        const canvasCtx = canvasElement.getContext('2d');
+        const video = document.getElementById('video-input');
         const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
         hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        
         hands.onResults((results) => {
-            canvasCtx.save(); canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
             if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
                 this.handCount = results.multiHandLandmarks.length;
-                for (const landmarks of results.multiHandLandmarks) {
-                    drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
-                    drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 1, radius: 2});
-                }
-                if (this.handCount === 1) {
-                    this.processOneHand(results.multiHandLandmarks[0]);
-                    document.getElementById('status-text').innerText = "1 Hand: Control";
-                } else if (this.handCount === 2) {
-                    this.processTwoHands(results.multiHandLandmarks[0], results.multiHandLandmarks[1]);
-                    document.getElementById('status-text').innerText = "2 Hands: Rubber Band";
-                }
+                if (this.handCount === 1) this.processOneHand(results.multiHandLandmarks[0]);
+                else if (this.handCount === 2) this.processTwoHands(results.multiHandLandmarks[0], results.multiHandLandmarks[1]);
                 document.getElementById('status-dot').className = "w-2 h-2 rounded-full bg-green-500 animate-pulse";
+                document.getElementById('status-text').innerText = "Hands Connected";
             } else {
                 this.handCount = 0;
                 document.getElementById('status-dot').className = "w-2 h-2 rounded-full bg-red-500 animate-pulse";
                 document.getElementById('status-text').innerText = "Waiting for hands...";
             }
-            canvasCtx.restore();
         });
-        const camera = new Camera(videoElement, { onFrame: async () => { await hands.send({image: videoElement}); }, width: 640, height: 480 });
-        camera.start().then(() => {
-            document.getElementById('loading-screen').style.opacity = '0';
-            setTimeout(() => { document.getElementById('loading-screen').style.display = 'none'; }, 1000);
-        }).catch(err => { console.error(err); alert("Camera access denied."); document.getElementById('loading-screen').style.display = 'none'; });
+
+        const camera = new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 });
+        camera.start();
     }
 
-    processOneHand(landmarks) {
-        const wrist = landmarks[0]; const tip = landmarks[12];
-        const distanceY = Math.sqrt(Math.pow(tip.x - wrist.x, 2) + Math.pow(tip.y - wrist.y, 2));
-        let openness = (distanceY - 0.2) * 2.5; openness = Math.max(0, Math.min(1, openness)); 
-        this.handOpenness = openness; this.handPosition = { x: wrist.x, y: wrist.y };
-        const dy = tip.y - wrist.y; const dx = tip.x - wrist.x;
-        this.handAngle = Math.atan2(dy, dx) + (Math.PI / 2);
+    processOneHand(lm) {
+        const w=lm[0], t=lm[12];
+        this.handOpenness = this.calculateOpenness(lm);
+        this.handPosition = { x: w.x, y: w.y };
+        const dy=t.y-w.y, dx=t.x-w.x;
+        this.handAngle = Math.atan2(dy, dx) + Math.PI/2;
 
-        // --- 1. ROCK SIGN DETECTION (Shape Switch) ---
-        const isIndexUp = landmarks[8].y < landmarks[6].y;
-        const isPinkyUp = landmarks[20].y < landmarks[18].y;
-        const isMiddleDown = landmarks[12].y > landmarks[10].y;
-        const isRingDown = landmarks[16].y > landmarks[14].y;
+        if (this.gestureCooldown > 0) return;
 
-        const isRockSign = isIndexUp && isPinkyUp && isMiddleDown && isRingDown;
-
-        if (isRockSign) {
-            if (!this.isShapeGestureActive) {
-                this.cycleShape();
-                this.isShapeGestureActive = true;
-            }
-        } else {
-            this.isShapeGestureActive = false;
+        const isRock = (lm[8].y<lm[6].y && lm[20].y<lm[18].y && lm[12].y>lm[10].y && lm[16].y>lm[14].y);
+        if (isRock) {
+            this.cycleShape(); 
+            this.updateStatus("🤘 ROCK: NEXT SHAPE");
+            this.gestureCooldown = 20; 
+            return;
         }
 
-        // --- 2. PEACE SIGN (Color Switch) ---
-        const isPeaceSign = (landmarks[8].y < landmarks[6].y) && (landmarks[12].y < landmarks[10].y) && (landmarks[16].y > landmarks[14].y) && (landmarks[20].y > landmarks[18].y);
+        const isPeace = (lm[8].y<lm[6].y && lm[12].y<lm[10].y && lm[16].y>lm[14].y && lm[20].y>lm[18].y);
+        if (isPeace) {
+            this.cycleColor(); 
+            this.updateStatus("✌️ PEACE: NEXT COLOR");
+            this.gestureCooldown = 20;
+        }
+    }
+
+    processTwoHands(h1, h2) {
+        const x1=h1[0].x, y1=h1[0].y, x2=h2[0].x, y2=h2[0].y;
+        this.handDx = Math.abs(x2-x1); this.handDy = Math.abs(y2-y1);
+        this.handSeparation = Math.sqrt(Math.pow(x2-x1,2)+Math.pow(y2-y1,2));
+        this.handPosition = { x: (x1+x2)/2, y: (y1+y2)/2 };
+
+        if(this.gestureCooldown > 0) return;
+
+        // 1. HEART DETECTION
+        const idxDist = Math.sqrt(Math.pow(h1[8].x - h2[8].x, 2) + Math.pow(h1[8].y - h2[8].y, 2));
+        const thmDist = Math.sqrt(Math.pow(h1[4].x - h2[4].x, 2) + Math.pow(h1[4].y - h2[4].y, 2));
+        const leftPinkyDown = h1[20].y > h1[18].y;
+        const rightPinkyDown = h2[20].y > h2[18].y;
+
+        if (idxDist < 0.1 && thmDist < 0.1 && leftPinkyDown && rightPinkyDown) {
+            if (this.currentTemplate !== 'heart') {
+                this.setTemplate('heart');
+                this.setColor(0xff0000); 
+                this.isHeartGestureActive = true;
+                this.updateStatus("❤️ LOVE DETECTED");
+                this.gestureCooldown = 30;
+            }
+            return; 
+        } else if (idxDist > 0.15) {
+            this.isHeartGestureActive = false;
+        }
+
+        // 2. HEARTBREAK
+        if (this.currentTemplate === 'heart' && this.handSeparation > 0.2 && !this.isHeartBroken) {
+            this.isHeartBroken = true;
+            this.lastDestructionTime = this.time; 
+            this.updateStatus("💔 HEARTBROKEN");
+            this.gestureCooldown = 30;
+            return;
+        }
+
+        // 3. DOUBLE FIST (Destruction / Rain)
+        const op1 = this.calculateOpenness(h1);
+        const op2 = this.calculateOpenness(h2);
         
-        if (isPeaceSign) {
-            if (!this.isColorGestureActive) {
-                this.cycleColor();
-                this.isColorGestureActive = true;
+        if (op1 < 0.25 && op2 < 0.25 && !this.isHeartGestureActive) {
+            if(!this.isDoubleFist) {
+                this.isDoubleFist = true;
+                this.updateStatus("✊ DOUBLE FIST: BLAST");
             }
         } else {
-            this.isColorGestureActive = false;
+            this.isDoubleFist = false;
         }
-    }
-
-    processTwoHands(hand1, hand2) {
-        const x1 = hand1[0].x; const y1 = hand1[0].y;
-        const x2 = hand2[0].x; const y2 = hand2[0].y;
-        this.handDx = Math.abs(x2 - x1);
-        this.handDy = Math.abs(y2 - y1);
-        this.handSeparation = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
-        this.handPosition = { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
     }
 }
 const app = new ParticleApp();
