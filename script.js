@@ -7,6 +7,10 @@ class ParticleApp {
         this.positions = []; 
         this.targetColor = new THREE.Color(0xff3366);
         
+        // Textures
+        this.dotTexture = this.createDotTexture();
+        this.heartTexture = this.createHeartTexture();
+        
         // Interaction
         this.handCount = 0; this.handOpenness = 0; this.handPosition = { x: 0, y: 0 };
         this.handAngle = 0; this.lastHandAngle = 0; this.rotationalVelocity = 0; this.hasPreviousAngle = false;
@@ -32,11 +36,20 @@ class ParticleApp {
         this.audioContext = null; this.analyser = null; this.dataArray = null;
         this.isAudioActive = false; this.simulatedAudio = false;
         
-        // SHAPE LIST (Heart & Flower hidden from cycle)
+        // SHAPE LIST
         this.shapeList = ['sphere', 'saturn', 'flowers', 'fireworks', 'dna', 'cube', 'torus', 'flower_pot', 'heart'];
         this.currentShapeIndex = 0;
         
-        this.colorList = [0xff3366, 0x33ccff, 0x00ff99, 0xffcc33, 0xffffff, 0xcc33ff];
+        // NEON PALETTE
+        this.colorList = [
+            0xff0055, // Neon Red
+            0x00ffff, // Cyan
+            0x39ff14, // Green
+            0xbc13fe, // Purple
+            0xffea00, // Yellow
+            0xff5e00, // Orange
+            0xffffff  // White
+        ];
         this.currentColorIndex = 0;
         this.currentTemplate = 'sphere'; 
         this.customText = "";
@@ -76,7 +89,7 @@ class ParticleApp {
             this.simulatedAudio = true;
         });
         const bg = document.getElementById('bg-music');
-        bg.play().catch(e=>{});
+        if(bg) bg.play().catch(e=>{});
     }
 
     toggleAudio() {
@@ -95,8 +108,8 @@ class ParticleApp {
     initThree() {
         const container = document.getElementById('canvas-container');
         this.scene = new THREE.Scene();
-        this.scene.fog = new THREE.FogExp2(0x050505, 0.002);
-        this.scene.background = new THREE.Color(0x050505);
+        this.scene.fog = new THREE.FogExp2(0x000000, 0.002);
+        this.scene.background = new THREE.Color(0x000000);
         this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         this.camera.position.z = 30;
         this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
@@ -106,7 +119,7 @@ class ParticleApp {
         
         const renderScene = new THREE.RenderPass(this.scene, this.camera);
         const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
-        bloomPass.threshold = 0.0; bloomPass.strength = 1.8; bloomPass.radius = 0.5;
+        bloomPass.threshold = 0.0; bloomPass.strength = 2.0; bloomPass.radius = 0.5;
         this.composer = new THREE.EffectComposer(this.renderer);
         this.composer.addPass(renderScene);
         this.composer.addPass(bloomPass);
@@ -117,7 +130,8 @@ class ParticleApp {
         });
     }
 
-    createTexture() {
+    // 1. ORIGINAL DOT TEXTURE
+    createDotTexture() {
         const canvas = document.createElement('canvas');
         canvas.width = 32; canvas.height = 32;
         const ctx = canvas.getContext('2d');
@@ -131,6 +145,23 @@ class ParticleApp {
         return texture;
     }
 
+    // 2. TINY HEART TEXTURE
+    createHeartTexture() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 64; canvas.height = 64; 
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff'; 
+        ctx.beginPath();
+        const x = 32, y = 32;
+        ctx.moveTo(x, y + 20);
+        ctx.bezierCurveTo(x + 22, y + 8, x + 22, y - 14, x, y - 6);
+        ctx.bezierCurveTo(x - 22, y - 14, x - 22, y + 8, x, y + 20);
+        ctx.fill();
+        const texture = new THREE.Texture(canvas);
+        texture.needsUpdate = true;
+        return texture;
+    }
+
     initParticles() {
         const geo = new THREE.BufferGeometry();
         const pos = new Float32Array(this.count * 3);
@@ -138,19 +169,32 @@ class ParticleApp {
         for(let i=0; i<this.count*3; i++) { pos[i] = (Math.random()-0.5)*50; col[i] = 1; }
         geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
         geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-        const mat = new THREE.PointsMaterial({ size: 0.35, map: this.createTexture(), transparent: true, opacity: 0.9, vertexColors: true, blending: THREE.AdditiveBlending, depthWrite: false });
+        
+        // Default Material (Dot)
+        const mat = new THREE.PointsMaterial({ 
+            size: 0.35, 
+            map: this.dotTexture, 
+            transparent: true, 
+            opacity: 0.9, 
+            vertexColors: true, 
+            blending: THREE.AdditiveBlending, 
+            depthWrite: false 
+        });
+        
         this.particles = new THREE.Points(geo, mat);
         this.scene.add(this.particles);
         this.currentPositions = this.particles.geometry.attributes.position.array;
         this.generateShape('sphere');
     }
 
-    // --- ANIMATION LOOP ---
+    // --- ANIMATION LOOP (REVERTED HEARTBREAK) ---
     animate() {
         requestAnimationFrame(() => this.animate());
         this.time += 0.01;
         this.clock.getDelta();
         if(this.gestureCooldown > 0) this.gestureCooldown--;
+
+        this.blastIntensity *= 0.92; 
 
         let bassFactor = 0;
         let freqData = [];
@@ -190,26 +234,17 @@ class ParticleApp {
 
         // --- SEQUENCE LOGIC ---
         
-        // 1. Double Fist on Flower = Rain
-        if (this.isDoubleFist && this.handCount === 2 && isFlowerMode && !this.isRainMode) {
-            this.isRainMode = true;
-            this.setTemplate('rain_mode'); 
-            this.lastDestructionTime = this.time;
-            this.isDoubleFist = false; 
-            this.updateStatus("🌧️ LOVE RAIN");
-        }
-
-        // 2. Rain to Heart
+        // 1. Rain to Heart Sequence
         if (this.isRainMode) {
             let elapsed = this.time - this.lastDestructionTime;
-            // 5 seconds of rain
-            if (elapsed > 5.0 && !this.isMerging) {
+            // Heavy Rain of Hearts for 4 seconds
+            if (elapsed > 4.0 && !this.isMerging) {
                 this.isMerging = true;
                 this.generateShape('heart'); 
                 this.updateStatus("❤️ FORMING LOVE");
             }
-            // 2 seconds of merging (7s total)
-            if (elapsed > 7.0) {
+            // Merge finishes at 6 seconds
+            if (elapsed > 6.0) {
                 this.isRainMode = false;
                 this.isMerging = false;
                 this.setTemplate('heart');
@@ -217,24 +252,14 @@ class ParticleApp {
             }
         }
 
-        // 3. Heartbreak to Flower (Fast 0.4s)
+        // 2. Heartbreak to Flower
         if (this.isHeartBroken) {
-            if (this.time - this.lastDestructionTime > 0.4) { 
+            if (this.time - this.lastDestructionTime > 2.0) { 
                 this.isHeartBroken = false; 
                 this.setTemplate('flower_pot'); 
                 this.updateStatus("🌹 FOR YOU");
             }
         }
-
-        // 4. Standard Destruction (Not in special modes)
-        if (this.isDoubleFist && !isHeartMode && !isFlowerMode && !this.isRainMode && !this.isHeartBroken) {
-            this.lastDestructionTime = this.time;
-            this.updateStatus("💥 BLAST!");
-        }
-
-        let isDestroyed = (this.isDoubleFist && !isFlowerMode && !isHeartMode && !isRainMode) || (this.time - this.lastDestructionTime < 0.05);
-        let targetBlast = isDestroyed ? 5.0 : 0.0;
-        this.blastIntensity += (targetBlast - this.blastIntensity) * 0.4; 
 
         if (!this.isHeartBroken && !this.isRainMode) {
             this.currentScaleX += (scaleX - this.currentScaleX) * 0.2; 
@@ -251,14 +276,14 @@ class ParticleApp {
 
         for(let i = 0; i < this.count; i++) {
             const i3 = i * 3;
-            let tx = this.positions[i3];
-            let ty = this.positions[i3+1];
-            let tz = this.positions[i3+2];
-
-            // 1. RAIN
+            
+            // 1. RAIN MODE (RAIN OF HEARTS)
             if (this.isRainMode) {
                 if (this.isMerging) {
-                    let mergeSpeed = 0.15; 
+                    let tx = this.positions[i3];
+                    let ty = this.positions[i3+1];
+                    let tz = this.positions[i3+2];
+                    let mergeSpeed = 0.12; 
                     positions[i3] += (tx - positions[i3]) * mergeSpeed;
                     positions[i3+1] += (ty - positions[i3+1]) * mergeSpeed;
                     positions[i3+2] += (tz - positions[i3+2]) * mergeSpeed;
@@ -266,32 +291,39 @@ class ParticleApp {
                     colors[i3+1] += (0.0 - colors[i3+1]) * 0.1;
                     colors[i3+2] += (0.0 - colors[i3+2]) * 0.1;
                 } else {
-                    let speed = 0.1 + (Math.random() * 0.15);
-                    ty += speed + (bassFactor * 0.5); 
-                    if (ty > 20) { ty = -50; tx = (Math.random()-0.5)*150; tz = (Math.random()-0.5)*60; }
-                    this.targetColor.r = 1.0; this.targetColor.g = 0.05; this.targetColor.b = 0.2;
-                    positions[i3] = tx; positions[i3+1] = ty; positions[i3+2] = tz;
-                    colors[i3] += (this.targetColor.r - colors[i3]) * 0.1;
-                    colors[i3+1] += (this.targetColor.g - colors[i3+1]) * 0.1;
-                    colors[i3+2] += (this.targetColor.b - colors[i3+2]) * 0.1;
+                    let speed = 0.2 + (Math.random() * 0.4);
+                    positions[i3+1] -= speed + (bassFactor * 0.5); 
+                    
+                    if (positions[i3+1] < -25) { 
+                        positions[i3+1] = 25; 
+                        positions[i3] = (Math.random()-0.5) * 200; 
+                        positions[i3+2] = (Math.random()-0.5) * 80; 
+                    }
+                    
+                    if(i % 3 === 0) { colors[i3]=1.0; colors[i3+1]=0.2; colors[i3+2]=0.6; } 
+                    else if (i % 3 === 1) { colors[i3]=1.0; colors[i3+1]=0.8; colors[i3+2]=0.8; } 
+                    else { colors[i3]=1.0; colors[i3+1]=1.0; colors[i3+2]=1.0; }
                 }
-                continue;
-            }
-
-            // 2. HEARTBREAK (Fast Fall)
-            else if (this.isHeartBroken) {
-                ty -= 40.0; 
-                if (tx < 0) tx -= 8.0; else tx += 8.0; 
-                tx += (Math.random()-0.5)*5.0; 
-                colors[i3] = 0.2; colors[i3+1] = 0.2; colors[i3+2] = 0.4; 
-                positions[i3] += (tx - positions[i3]) * 0.2;
-                positions[i3+1] += (ty - positions[i3+1]) * 0.2;
-                positions[i3+2] += (tz - positions[i3+2]) * 0.2;
                 continue; 
             }
 
+            // 2. HEARTBREAK (SADNESS) - REVERTED TO ORIGINAL
+            else if (this.isHeartBroken) {
+                positions[i3+1] -= 0.3; 
+                if (positions[i3] < 0) positions[i3] -= 0.05; else positions[i3] += 0.05;
+                if (i % 2 === 0) { colors[i3]=0.5; colors[i3+1]=0.5; colors[i3+2]=0.5; } 
+                else { colors[i3]=0.8; colors[i3+1]=0.8; colors[i3+2]=0.9; }
+                colors[i3] *= 0.95; colors[i3+1] *= 0.95; colors[i3+2] *= 0.95;
+                continue; 
+            }
+
+            // --- STANDARD MODES ---
+            let tx = this.positions[i3];
+            let ty = this.positions[i3+1];
+            let tz = this.positions[i3+2];
+
             // 3. FLOWER COLORS
-            if (isFlowerMode && !this.isRainMode) {
+            if (isFlowerMode) {
                 const flowerLimit = this.count * 0.7;
                 if (i < flowerLimit) {
                     if (ty > 7.5) { this.targetColor.setRGB(1.0, 0.0, 0.2); if(Math.random()>0.95) this.targetColor.setRGB(1,0.8,0.8); } 
@@ -303,33 +335,29 @@ class ParticleApp {
             }
 
             // 4. EQ & TURBULENCE
-            if (!this.isRainMode) {
-                let freqIndex = Math.floor((i % 512)); 
-                let eqVal = 0;
-                if(freqData[freqIndex]) eqVal = freqData[freqIndex] / 255.0;
-                let stability = (isHeartMode || isFlowerMode || isTextMode) ? 0.2 : 4.0;
-                let eqPush = 1.0 + (eqVal * stability);
-                tx *= eqPush * factor; ty *= eqPush * factor; tz *= eqPush * factor;
+            let freqIndex = Math.floor((i % 512)); 
+            let eqVal = 0;
+            if(freqData[freqIndex]) eqVal = freqData[freqIndex] / 255.0;
+            let stability = (isHeartMode || isFlowerMode || isTextMode) ? 0.2 : 4.0;
+            let eqPush = 1.0 + (eqVal * stability);
+            tx *= eqPush * factor; ty *= eqPush * factor; tz *= eqPush * factor;
 
-                if (!isHeartMode && !isFlowerMode) {
-                    let noise = Math.sin(this.time * 5 + i) * 0.2; 
-                    tx += noise; ty += noise; tz += noise;
-                }
+            if (!isHeartMode && !isFlowerMode) {
+                let noise = Math.sin(this.time * 5 + i) * 0.2; 
+                tx += noise; ty += noise; tz += noise;
             }
 
-            // 5. DESTRUCTION
+            // 5. BOMB BLAST
             if (this.blastIntensity > 0.1) {
-                if (i % 5 === 0) {
-                     tx += (Math.random()-0.5) * 5.0; ty += (Math.random()-0.5) * 5.0; tz += (Math.random()-0.5) * 5.0;
-                } else {
-                    let scatter = this.blastIntensity * 80;
-                    tx = Math.sin(i * 12.9) * scatter; ty = Math.cos(i * 78.2) * scatter; tz = Math.sin(i * 45.1) * scatter;
-                }
+                let scatter = this.blastIntensity * 50;
+                tx += (Math.random()-0.5) * scatter; 
+                ty += (Math.random()-0.5) * scatter; 
+                tz += (Math.random()-0.5) * scatter;
             }
 
             // 6. PHYSICS
             let forceX = 0, forceY = 0;
-            if (!isHeartMode && !isFlowerMode && !this.isRainMode && !isTextMode && !this.isDoubleFist) {
+            if (!isHeartMode && !isFlowerMode && !isTextMode && !this.isDoubleFist) {
                 let px = positions[i3], py = positions[i3+1];
                 let dist = Math.sqrt((px - physX)**2 + (py - physY)**2);
                 if (isAttracting) {
@@ -343,8 +371,13 @@ class ParticleApp {
                 }
             }
 
-            let speed = (this.isRainMode) ? 0.05 : (isAttracting ? 0.08 : 0.4);
-            if(!isHeartMode && !isFlowerMode && !this.isRainMode && !isTextMode) { tx += (Math.random()-0.5)*0.2; ty += (Math.random()-0.5)*0.2; }
+            // --- SPEED CONTROL ---
+            // Kept the faster formation speed as that wasn't part of the heartbreak effect itself
+            let speed = (isAttracting ? 0.08 : 0.4);
+            if (isHeartMode) speed = 0.85; 
+            if (this.blastIntensity > 1.0) speed = 0.5;
+
+            if(!isHeartMode && !isFlowerMode && !isTextMode) { tx += (Math.random()-0.5)*0.2; ty += (Math.random()-0.5)*0.2; }
 
             positions[i3] += ((tx + forceX) - positions[i3]) * speed;
             positions[i3+1] += ((ty + forceY) - positions[i3+1]) * speed;
@@ -530,12 +563,13 @@ class ParticleApp {
     }
 
     cycleShape() { 
-        this.currentShapeIndex = (this.currentShapeIndex + 1) % this.shapeList.length; 
-        let nextShape = this.shapeList[this.currentShapeIndex];
-        if(nextShape === 'heart' || nextShape === 'flower_pot') {
-            this.currentShapeIndex = 1; 
-            nextShape = 'sphere';
-        }
+        // SAFE CYCLE
+        const safeShapes = ['sphere', 'saturn', 'flowers', 'fireworks', 'dna', 'cube', 'torus'];
+        
+        let currentSafeIndex = safeShapes.indexOf(this.currentTemplate);
+        if (currentSafeIndex === -1) currentSafeIndex = 0; 
+
+        let nextShape = safeShapes[(currentSafeIndex + 1) % safeShapes.length];
         this.setTemplate(nextShape); 
     }
     
@@ -549,7 +583,18 @@ class ParticleApp {
         
         // RESET SPECIAL STATES
         this.isHeartBroken = false;
-        this.isRainMode = false;
+        
+        if (type !== 'rain_mode') {
+            this.isRainMode = false;
+            // SWITCH TEXTURE: Use Dot for normal shapes
+            this.particles.material.map = this.dotTexture;
+            this.particles.material.size = 0.35;
+        } else {
+            // SWITCH TEXTURE: Use Heart for Rain
+            this.particles.material.map = this.heartTexture;
+            this.particles.material.size = 1.2;
+        }
+        
         this.isMerging = false;
         this.isDoubleFist = false;
         this.isHeartGestureActive = false;
@@ -562,6 +607,7 @@ class ParticleApp {
         if (type !== 'heart' && type !== 'flower_pot' && type !== 'rain_mode') { 
             this.setColor(this.colorList[this.currentColorIndex]); 
         }
+        this.updateStatus("SHAPE: " + type.toUpperCase());
     }
 
     setColor(hex) { this.targetColor.setHex(hex); }
@@ -604,6 +650,12 @@ class ParticleApp {
 
         if (this.gestureCooldown > 0) return;
 
+        // PINCH GUARD
+        const thumbTip = lm[4];
+        const middleTip = lm[12];
+        const pinchDist = Math.hypot(thumbTip.x - middleTip.x, thumbTip.y - middleTip.y);
+        if (pinchDist < 0.06) return; 
+
         const isRock = (lm[8].y<lm[6].y && lm[20].y<lm[18].y && lm[12].y>lm[10].y && lm[16].y>lm[14].y);
         if (isRock) {
             this.cycleShape(); 
@@ -620,6 +672,7 @@ class ParticleApp {
         }
     }
 
+    // --- TWO HANDS LOGIC (REVERTED HEARTBREAK) ---
     processTwoHands(h1, h2) {
         const x1=h1[0].x, y1=h1[0].y, x2=h2[0].x, y2=h2[0].y;
         this.handDx = Math.abs(x2-x1); this.handDy = Math.abs(y2-y1);
@@ -631,24 +684,29 @@ class ParticleApp {
         // 1. HEART DETECTION
         const idxDist = Math.sqrt(Math.pow(h1[8].x - h2[8].x, 2) + Math.pow(h1[8].y - h2[8].y, 2));
         const thmDist = Math.sqrt(Math.pow(h1[4].x - h2[4].x, 2) + Math.pow(h1[4].y - h2[4].y, 2));
+        const midDist = Math.sqrt(Math.pow(h1[12].x - h2[12].x, 2) + Math.pow(h1[12].y - h2[12].y, 2));
         const leftPinkyDown = h1[20].y > h1[18].y;
         const rightPinkyDown = h2[20].y > h2[18].y;
 
-        if (idxDist < 0.1 && thmDist < 0.1 && leftPinkyDown && rightPinkyDown) {
+        // Strict Heart check
+        if (idxDist < 0.06 && thmDist < 0.06 && leftPinkyDown && rightPinkyDown) {
+            this.isHeartGestureActive = true; 
+
             if (this.currentTemplate !== 'heart') {
                 this.setTemplate('heart');
                 this.setColor(0xff0000); 
-                this.isHeartGestureActive = true;
                 this.updateStatus("❤️ LOVE DETECTED");
                 this.gestureCooldown = 30;
             }
             return; 
         } else if (idxDist > 0.15) {
-            this.isHeartGestureActive = false;
+            this.isHeartGestureActive = false; 
         }
 
-        // 2. HEARTBREAK
-        if (this.currentTemplate === 'heart' && this.handSeparation > 0.2 && !this.isHeartBroken) {
+        // 2. HEARTBREAK LOGIC (REVERTED TO ORIGINAL)
+        // It is easier to break now (0.25 distance) and can break while holding the gesture.
+        const verticalDiff = Math.abs(h1[0].y - h2[0].y);
+        if (this.currentTemplate === 'heart' && this.handSeparation > 0.25 && verticalDiff < 0.15 && !this.isHeartBroken) {
             this.isHeartBroken = true;
             this.lastDestructionTime = this.time; 
             this.updateStatus("💔 HEARTBROKEN");
@@ -656,14 +714,25 @@ class ParticleApp {
             return;
         }
 
-        // 3. DOUBLE FIST (Destruction / Rain)
-        const op1 = this.calculateOpenness(h1);
-        const op2 = this.calculateOpenness(h2);
+        // 3. DOUBLE FIST LOGIC
+        const leftFist = h1[8].y > h1[6].y && h1[12].y > h1[10].y;
+        const rightFist = h2[8].y > h2[6].y && h2[12].y > h2[10].y;
         
-        if (op1 < 0.25 && op2 < 0.25 && !this.isHeartGestureActive) {
+        if (leftFist && rightFist && !this.isHeartGestureActive) {
             if(!this.isDoubleFist) {
                 this.isDoubleFist = true;
-                this.updateStatus("✊ DOUBLE FIST: BLAST");
+                
+                if (this.currentTemplate === 'flower_pot') {
+                    if (!this.isRainMode) {
+                        this.isRainMode = true;
+                        this.setTemplate('rain_mode'); 
+                        this.lastDestructionTime = this.time; 
+                        this.updateStatus("🌧️ LOVE RAIN");
+                    }
+                } else {
+                    this.blastIntensity = 5.0; 
+                    this.updateStatus("💥 BANG! REFORMING...");
+                }
             }
         } else {
             this.isDoubleFist = false;
